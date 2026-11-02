@@ -1,0 +1,86 @@
+# Sealed build: upstream builds and tests on Jenkins (Jenkinsfile + ci/test.sh),
+# not GitHub Actions. This mirrors ci/test.sh (`./mvnw -s settings.xml clean
+# dependency:list verify -Dsort -U -B`) on the Jenkins JDK pair (main 17, next 21).
+# It builds spring-data-relational and runs its own suite plus the test suites of
+# its in-repo consumers spring-data-jdbc and spring-data-r2dbc (default profile:
+# jdbc on embedded HSQLDB, r2dbc on H2 plus whatever Testcontainers databases the
+# runner's Docker can start), so the query-mapping code paths in the relational
+# module are exercised end to end.
+name: Seal build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire -Dtest selector; empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    name: Build and test (JDK ${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ '17', '21' ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+
+      - name: Accept third-party container licenses (as ci/test.sh does)
+        run: sh ci/accept-third-party-license.sh
+
+      - name: Build and test spring-data-relational, spring-data-jdbc, spring-data-r2dbc
+        env:
+          MAVEN_OPTS: -Duser.name=spring-builds+jenkins
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            ./mvnw -s settings.xml -Dscan=false -Dgradle.cache.local.enabled=false -Dgradle.cache.remote.enabled=false \
+              -pl spring-data-relational,spring-data-jdbc,spring-data-r2dbc -am clean verify -B \
+              -Dtest='${{ inputs.test-filter }}' -Dit.test='${{ inputs.test-filter }}' \
+              -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+          else
+            ./mvnw -s settings.xml -Dscan=false -Dgradle.cache.local.enabled=false -Dgradle.cache.remote.enabled=false \
+              -pl spring-data-relational,spring-data-jdbc,spring-data-r2dbc -am clean dependency:list verify -Dsort -U -B
+          fi
+
+      - name: Report per-module test results and skipped tests
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          for mod in ("spring-data-relational", "spring-data-jdbc", "spring-data-r2dbc"):
+              tot = fail = err = skip = 0
+              skipped = []
+              files = sorted(glob.glob(f"{mod}/target/surefire-reports/TEST-*.xml") + glob.glob(f"{mod}/target/failsafe-reports/TEST-*.xml"))
+              for f in files:
+                  root = ET.parse(f).getroot()
+                  for tc in root.iter("testcase"):
+                      tot += 1
+                      if tc.find("failure") is not None: fail += 1
+                      if tc.find("error") is not None: err += 1
+                      s = tc.find("skipped")
+                      if s is not None:
+                          skip += 1
+                          msg = " ".join(((s.get("message") or "") + " " + (s.text or "")).split()) or "no message (@Disabled/assumption)"
+                          skipped.append(f"SKIPPED {tc.get('classname')}.{tc.get('name')}: {msg[:600]}")
+              print(f"== {mod}: tests run={tot}, passed={tot-fail-err-skip}, failures={fail}, errors={err}, skipped={skip}")
+              for line in skipped:
+                  print("   " + line)
+          EOF
+
+      - name: Upload jar
+        if: matrix.java == '17'
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-data-relational-jar
+          path: spring-data-relational/target/spring-data-relational-3.3.1.jar
+          if-no-files-found: error
