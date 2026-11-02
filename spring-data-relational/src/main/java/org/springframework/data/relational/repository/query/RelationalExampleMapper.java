@@ -21,16 +21,20 @@ import static org.springframework.data.domain.ExampleMatcher.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 import org.springframework.data.domain.Example;
 import org.springframework.data.mapping.PersistentPropertyAccessor;
 import org.springframework.data.mapping.PropertyHandler;
 import org.springframework.data.mapping.context.MappingContext;
+import org.springframework.data.relational.core.dialect.Escaper;
 import org.springframework.data.relational.core.mapping.RelationalPersistentEntity;
 import org.springframework.data.relational.core.mapping.RelationalPersistentProperty;
 import org.springframework.data.relational.core.query.Criteria;
 import org.springframework.data.relational.core.query.Query;
+import org.springframework.data.relational.core.query.ValueFunction;
 import org.springframework.data.support.ExampleMatcherAccessor;
+import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
 /**
@@ -38,6 +42,7 @@ import org.springframework.util.Assert;
  *
  * @since 2.2
  * @author Greg Turnquist
+ * @author Christoph Strobl
  */
 public class RelationalExampleMapper {
 
@@ -104,19 +109,25 @@ public class RelationalExampleMapper {
 							: Criteria.where(column).is(convPropValue).ignoreCase(ignoreCase));
 					break;
 				case ENDING:
+					ValueFunction<String> endingValueFunction = new LikeValueFunction<>(
+							escaper -> "%" + escaper.escape(convPropValue.toString()));
 					criteriaBasedOnProperties.add(includeNulls(example) //
-							? Criteria.where(column).isNull().or(column).like("%" + convPropValue).ignoreCase(ignoreCase)
-							: Criteria.where(column).like("%" + convPropValue).ignoreCase(ignoreCase));
+							? Criteria.where(column).isNull().or(column).like(endingValueFunction).ignoreCase(ignoreCase)
+							: Criteria.where(column).like(endingValueFunction).ignoreCase(ignoreCase));
 					break;
 				case STARTING:
+					ValueFunction<String> startingValueFunction = new LikeValueFunction<>(
+							escaper -> escaper.escape(convPropValue.toString()) + "%");
 					criteriaBasedOnProperties.add(includeNulls(example) //
-							? Criteria.where(column).isNull().or(column).like(convPropValue + "%").ignoreCase(ignoreCase)
-							: Criteria.where(column).like(convPropValue + "%").ignoreCase(ignoreCase));
+							? Criteria.where(column).isNull().or(column).like(startingValueFunction).ignoreCase(ignoreCase)
+							: Criteria.where(column).like(startingValueFunction).ignoreCase(ignoreCase));
 					break;
 				case CONTAINING:
+					ValueFunction<String> containingValueFunction = new LikeValueFunction<>(
+							escaper -> "%" + escaper.escape(convPropValue.toString()) + "%");
 					criteriaBasedOnProperties.add(includeNulls(example) //
-							? Criteria.where(column).isNull().or(column).like("%" + convPropValue + "%").ignoreCase(ignoreCase)
-							: Criteria.where(column).like("%" + convPropValue + "%").ignoreCase(ignoreCase));
+							? Criteria.where(column).isNull().or(column).like(containingValueFunction).ignoreCase(ignoreCase)
+							: Criteria.where(column).like(containingValueFunction).ignoreCase(ignoreCase));
 					break;
 				default:
 					throw new IllegalStateException(example.getMatcher().getDefaultStringMatcher() + " is not supported");
@@ -146,5 +157,41 @@ public class RelationalExampleMapper {
 	 */
 	private static <T> boolean includeNulls(Example<T> example) {
 		return example.getMatcher().getNullHandler() == NullHandler.INCLUDE;
+	}
+
+	/**
+	 * {@link ValueFunction} producing a {@code LIKE} pattern whose probe value gets its wildcard characters escaped
+	 * through the {@link Escaper} provided by the consuming query mapper. Mapped functions retain this behavior.
+	 * {@link #toString()} renders the pattern escaped with {@link Escaper#DEFAULT} so that consumers binding the function
+	 * as plain parameter value (instead of applying it) still bind the escaped pattern and never the raw probe value.
+	 *
+	 * @param <T> the type of the produced value.
+	 */
+	private static class LikeValueFunction<T> implements ValueFunction<T> {
+
+		private final Function<Escaper, T> function;
+
+		LikeValueFunction(Function<Escaper, T> function) {
+			this.function = function;
+		}
+
+		@Nullable
+		@Override
+		public T apply(Escaper escaper) {
+			return function.apply(escaper);
+		}
+
+		@Override
+		public <R> ValueFunction<R> map(Function<T, R> mapper) {
+
+			Assert.notNull(mapper, "Mapping function must not be null");
+
+			return new LikeValueFunction<>(escaper -> mapper.apply(apply(escaper)));
+		}
+
+		@Override
+		public String toString() {
+			return String.valueOf(apply(Escaper.DEFAULT));
+		}
 	}
 }

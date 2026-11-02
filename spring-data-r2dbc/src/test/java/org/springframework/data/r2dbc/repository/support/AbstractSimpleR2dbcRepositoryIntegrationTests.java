@@ -586,6 +586,38 @@ public abstract class AbstractSimpleR2dbcRepositoryIntegrationTests extends R2db
 				.verifyComplete();
 	}
 
+	@Test // GH-2309
+	void shouldSelectByExampleMatchingWildcardsLiterally() {
+
+		jdbc.execute("INSERT INTO legoset (name, manual) VALUES('Moon space base', 12)");
+		jdbc.execute("INSERT INTO legoset (name, manual) VALUES('Mars space base', 13)");
+
+		LegoSetWithNonScalarId legoSet = new LegoSetWithNonScalarId();
+
+		legoSet.setName("%");
+		repositoryWithNonScalarId.findAll(Example.of(legoSet, matching().withStringMatcher(CONTAINING))) //
+				.as(StepVerifier::create) //
+				.verifyComplete();
+
+		legoSet.setName("M__n");
+		repositoryWithNonScalarId.findAll(Example.of(legoSet, matching().withStringMatcher(STARTING))) //
+				.as(StepVerifier::create) //
+				.verifyComplete();
+
+		legoSet.setName("%base");
+		repositoryWithNonScalarId.findAll(Example.of(legoSet, matching().withStringMatcher(ENDING))) //
+				.as(StepVerifier::create) //
+				.verifyComplete();
+
+		legoSet.setName("space");
+		repositoryWithNonScalarId.findAll(Example.of(legoSet, matching().withStringMatcher(CONTAINING))) //
+				.map(LegoSetWithNonScalarId::getName) //
+				.as(StepVerifier::create) //
+				.expectNext("Moon space base") //
+				.expectNext("Mars space base") //
+				.verifyComplete();
+	}
+
 	@Test // gh-538
 	void shouldSelectByExampleUsingFieldLevelStringMatcher() {
 

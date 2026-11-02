@@ -21,8 +21,11 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.domain.Example;
 import org.springframework.data.domain.ExampleMatcher;
+import org.springframework.data.relational.core.dialect.Escaper;
 import org.springframework.data.relational.core.mapping.RelationalMappingContext;
+import org.springframework.data.relational.core.query.CriteriaDefinition;
 import org.springframework.data.relational.core.query.Query;
+import org.springframework.data.relational.core.query.ValueFunction;
 
 import java.util.Objects;
 
@@ -188,6 +191,93 @@ public class RelationalExampleMapperTests {
 		assertThat(query.getCriteria()) //
 				.map(Object::toString) //
 				.hasValue("(firstname LIKE '%do')");
+	}
+
+	@Test // GH-2309
+	void queryByExampleShouldEscapeSpecialCharactersInStringMatching() {
+
+		Person person = new Person(null, "%", null, null);
+
+		ExampleMatcher matcher = matching().withStringMatcher(ENDING);
+		Example<Person> example = Example.of(person, matcher);
+
+		Query query = exampleMapper.getMappedExample(example);
+
+		assertThat(query.getCriteria().get().getGroup().get(0).getValue()).isInstanceOf(ValueFunction.class)
+				.satisfies(it -> {
+					assertThat(((ValueFunction<?>) it).apply(Escaper.of('!'))).isEqualTo("%!%");
+				});
+	}
+
+	@Test // GH-2309
+	void queryByExampleShouldEscapeWildcardsForAllLikeStringMatchers() {
+
+		Person person = new Person();
+		person.setFirstname("a%b_c");
+
+		assertThat(likeValue(Example.of(person, matching().withStringMatcher(STARTING))).apply(Escaper.DEFAULT))
+				.isEqualTo("a\\%b\\_c%");
+		assertThat(likeValue(Example.of(person, matching().withStringMatcher(ENDING))).apply(Escaper.DEFAULT))
+				.isEqualTo("%a\\%b\\_c");
+		assertThat(likeValue(Example.of(person, matching().withStringMatcher(CONTAINING))).apply(Escaper.DEFAULT))
+				.isEqualTo("%a\\%b\\_c%");
+		assertThat(likeValue(Example.of(person, matching().withMatcher("firstname", startsWith()))).apply(Escaper.of('!')))
+				.isEqualTo("a!%b!_c%");
+		assertThat(likeValue(Example.of(person, matching().withMatcher("firstname", endsWith()))).apply(Escaper.of('!')))
+				.isEqualTo("%a!%b!_c");
+		assertThat(likeValue(Example.of(person, matching().withMatcher("firstname", contains()))).apply(Escaper.of('!')))
+				.isEqualTo("%a!%b!_c%");
+	}
+
+	@Test // GH-2309
+	void queryByExampleShouldEscapeWildcardsWhenIncludingNulls() {
+
+		Person person = new Person();
+		person.setFirstname("%");
+
+		Example<Person> example = Example.of(person, matching().withStringMatcher(CONTAINING).withIncludeNullValues());
+
+		Query query = exampleMapper.getMappedExample(example);
+
+		assertThat(query.getCriteria()) //
+				.map(Object::toString) //
+				.hasValue("(firstname IS NULL OR firstname LIKE '%\\%%')");
+	}
+
+	@Test // GH-2309
+	void queryByExampleShouldNotReEnableWildcardsThroughEscapeCharacter() {
+
+		Person person = new Person();
+		person.setFirstname("\\%");
+
+		ValueFunction<?> value = likeValue(Example.of(person, matching().withStringMatcher(STARTING)));
+
+		assertThat(value.apply(Escaper.DEFAULT)).isEqualTo("\\\\\\%%");
+	}
+
+	@Test // GH-2309
+	void likeValueBoundWithoutApplyingEscaperShouldRenderEscapedPattern() {
+
+		Person person = new Person();
+		person.setFirstname("%");
+
+		ValueFunction<?> value = likeValue(Example.of(person, matching().withStringMatcher(CONTAINING)));
+		ValueFunction<String> mapped = value.map(it -> String.valueOf(it));
+
+		assertThat(value).hasToString("%\\%%");
+		assertThat(mapped).hasToString("%\\%%");
+		assertThat(mapped.apply(Escaper.of('!'))).isEqualTo("%!%%");
+	}
+
+	private ValueFunction<?> likeValue(Example<Person> example) {
+
+		Query query = exampleMapper.getMappedExample(example);
+		CriteriaDefinition criteria = query.getCriteria().get().getGroup().get(0);
+
+		assertThat(criteria.getComparator()).isEqualTo(CriteriaDefinition.Comparator.LIKE);
+		assertThat(criteria.getValue()).isInstanceOf(ValueFunction.class);
+
+		return (ValueFunction<?>) criteria.getValue();
 	}
 
 	@Test // GH-929

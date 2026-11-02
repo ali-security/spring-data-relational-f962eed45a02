@@ -790,6 +790,35 @@ public class JdbcRepositoryIntegrationTests {
 				.containsExactly(example.getProbe().getName());
 	}
 
+	@Test // GH-2309
+	void findAllByExampleWithStringMatcherShouldMatchProbeValueLiterally() {
+
+		repository.save(new DummyEntity("Diego"));
+		repository.save(createDummyEntity());
+
+		ExampleMatcher startsWith = ExampleMatcher.matching().withMatcher("name",
+				ExampleMatcher.GenericPropertyMatchers.startsWith());
+		ExampleMatcher endsWith = ExampleMatcher.matching().withMatcher("name",
+				ExampleMatcher.GenericPropertyMatchers.endsWith());
+		ExampleMatcher contains = ExampleMatcher.matching().withMatcher("name",
+				ExampleMatcher.GenericPropertyMatchers.contains());
+
+		assertThat(repository.findAll(Example.of(new DummyEntity("Die"), startsWith))).extracting(DummyEntity::getName)
+				.containsExactly("Diego");
+		assertThat(repository.findAll(Example.of(new DummyEntity("ego"), endsWith))).extracting(DummyEntity::getName)
+				.containsExactly("Diego");
+		assertThat(repository.findAll(Example.of(new DummyEntity("ieg"), contains))).extracting(DummyEntity::getName)
+				.containsExactly("Diego");
+
+		assertThat(repository.findAll(Example.of(new DummyEntity("%"), contains))).isEmpty();
+		assertThat(repository.findAll(Example.of(new DummyEntity("_"), contains))).isEmpty();
+		assertThat(repository.findAll(Example.of(new DummyEntity("D%"), startsWith))).isEmpty();
+		assertThat(repository.findAll(Example.of(new DummyEntity("Di_go"), startsWith))).isEmpty();
+		assertThat(repository.findAll(Example.of(new DummyEntity("%o"), endsWith))).isEmpty();
+		assertThat(repository.count(Example.of(new DummyEntity("%"), contains))).isZero();
+		assertThat(repository.exists(Example.of(new DummyEntity("%"), contains))).isFalse();
+	}
+
 	@Test // GH-1192
 	void findAllByExampleMultipleMatchShouldGetOne() {
 
